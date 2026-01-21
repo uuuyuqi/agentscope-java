@@ -119,6 +119,19 @@ public interface Session {
     void delete(SessionKey sessionKey);
 
     /**
+     * Delete a specific key from a session.
+     *
+     * <p>This method removes a single state entry from the session without deleting the entire
+     * session.
+     *
+     * @param sessionKey the session identifier
+     * @param key the state key to delete
+     */
+    default void delete(SessionKey sessionKey, String key) {
+        // Default implementation does nothing - subclasses should override
+    }
+
+    /**
      * List all session keys.
      *
      * @return set of all session keys

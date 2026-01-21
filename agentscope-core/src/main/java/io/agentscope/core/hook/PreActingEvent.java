@@ -17,6 +17,8 @@ package io.agentscope.core.hook;
 
 import io.agentscope.core.agent.Agent;
 import io.agentscope.core.message.ToolUseBlock;
+import io.agentscope.core.session.Session;
+import io.agentscope.core.state.SessionKey;
 import io.agentscope.core.tool.Toolkit;
 import java.util.Objects;
 
@@ -24,6 +26,8 @@ import java.util.Objects;
  * Event fired before tool execution.
  *
  * <p><b>Modifiable:</b> Yes - {@link #setToolUse(ToolUseBlock)}
+ *
+ * <p><b>Abortable:</b> Yes - {@link #abort(String)} to stop execution and optionally save state
  *
  * <p><b>Context:</b>
  * <ul>
@@ -42,9 +46,15 @@ import java.util.Objects;
  *   <li>Add authentication or context to individual tool calls</li>
  *   <li>Implement per-tool authorization checks</li>
  *   <li>Log or monitor individual tool invocations</li>
+ *   <li>Abort execution during graceful shutdown</li>
  * </ul>
  */
 public final class PreActingEvent extends ActingEvent {
+
+    private boolean aborted = false;
+    private String abortReason;
+    private Session abortSaveSession;
+    private SessionKey abortSaveSessionKey;
 
     /**
      * Constructor for PreActingEvent.
@@ -66,5 +76,81 @@ public final class PreActingEvent extends ActingEvent {
      */
     public void setToolUse(ToolUseBlock toolUse) {
         this.toolUse = Objects.requireNonNull(toolUse, "toolUse cannot be null");
+    }
+
+    /**
+     * Abort the agent execution with a reason.
+     *
+     * <p>When called, the agent will throw an {@link AgentAbortedException} instead of
+     * executing the tool. This is useful for graceful shutdown scenarios where
+     * new operations should be rejected.
+     *
+     * @param reason The reason for aborting (will be included in the exception)
+     */
+    public void abort(String reason) {
+        abort(reason, null, null);
+    }
+
+    /**
+     * Abort the agent execution with a reason and save state to the specified session.
+     *
+     * <p>When session and sessionKey are provided, the agent will save its current state
+     * to the session before throwing the exception. This allows the operation to be
+     * resumed later on another instance by loading from the same session key.
+     *
+     * @param reason The reason for aborting
+     * @param session The session to save state to (may be null to skip saving)
+     * @param sessionKey The session key for saving state (may be null to skip saving)
+     */
+    public void abort(String reason, Session session, SessionKey sessionKey) {
+        this.aborted = true;
+        this.abortReason = reason;
+        this.abortSaveSession = session;
+        this.abortSaveSessionKey = sessionKey;
+    }
+
+    /**
+     * Check if abort has been requested.
+     *
+     * @return true if {@link #abort(String)} has been called
+     */
+    public boolean isAborted() {
+        return aborted;
+    }
+
+    /**
+     * Get the abort reason.
+     *
+     * @return The abort reason, or null if not aborted
+     */
+    public String getAbortReason() {
+        return abortReason;
+    }
+
+    /**
+     * Check if state should be saved on abort.
+     *
+     * @return true if session and sessionKey are provided for saving state
+     */
+    public boolean isSaveStateOnAbort() {
+        return abortSaveSession != null && abortSaveSessionKey != null;
+    }
+
+    /**
+     * Get the session for saving state on abort.
+     *
+     * @return The session, or null if state should not be saved
+     */
+    public Session getAbortSaveSession() {
+        return abortSaveSession;
+    }
+
+    /**
+     * Get the session key for saving state on abort.
+     *
+     * @return The session key, or null if state should not be saved
+     */
+    public SessionKey getAbortSaveSessionKey() {
+        return abortSaveSessionKey;
     }
 }

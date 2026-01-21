@@ -1,0 +1,31 @@
+server:
+  port: 8080
+  shutdown: graceful
+
+spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 35s
+  datasource:
+    url: jdbc:mysql://localhost:3306/agentscope?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+    username: root
+    password: password
+
+agentscope:
+  shutdown:
+    timeout: 30
+  model:
+    api-key: ${DASHSCOPE_API_KEY:your-api-key-here}
+    model-name: ${MODEL_NAME:qwen-plus}
+
+logging:
+  level:
+    io.agentscope: DEBUG
+    io.agentscope.examples.shutdown: DEBUG
+  pattern:
+    console: "%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

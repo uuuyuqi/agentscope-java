@@ -171,6 +171,22 @@ public class InMemorySession implements Session {
     }
 
     /**
+     * Delete a specific key from a session.
+     *
+     * @param sessionKey the session identifier
+     * @param key the state key to delete
+     */
+    @Override
+    public void delete(SessionKey sessionKey, String key) {
+        String sessionKeyStr = serializeSessionKey(sessionKey);
+        SessionData sessionData = sessions.get(sessionKeyStr);
+        if (sessionData != null) {
+            sessionData.singleStates.remove(key);
+            sessionData.listStates.remove(key);
+        }
+    }
+
+    /**
      * List all session keys.
      *
      * @return set of all session keys

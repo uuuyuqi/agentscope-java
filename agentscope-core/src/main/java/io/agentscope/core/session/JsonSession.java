@@ -299,6 +299,38 @@ public class JsonSession implements Session {
     }
 
     /**
+     * Delete a specific key from a session.
+     *
+     * @param sessionKey the session identifier
+     * @param key the state key to delete
+     */
+    @Override
+    public void delete(SessionKey sessionKey, String key) {
+        Path sessionDir = getSessionDir(sessionKey);
+        if (!Files.exists(sessionDir)) {
+            return;
+        }
+
+        // Try to delete the JSON file for this key
+        Path jsonFile = sessionDir.resolve(key + ".json");
+        try {
+            Files.deleteIfExists(jsonFile);
+        } catch (IOException e) {
+            // Ignore deletion errors
+        }
+
+        // Also try to delete JSONL file and its hash file (for list storage)
+        Path jsonlFile = sessionDir.resolve(key + ".jsonl");
+        Path hashFile = sessionDir.resolve(key + ".hash");
+        try {
+            Files.deleteIfExists(jsonlFile);
+            Files.deleteIfExists(hashFile);
+        } catch (IOException e) {
+            // Ignore deletion errors
+        }
+    }
+
+    /**
      * List all session keys.
      *
      * @return set of all session keys

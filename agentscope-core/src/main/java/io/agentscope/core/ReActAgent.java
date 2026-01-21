@@ -18,6 +18,7 @@ package io.agentscope.core;
 import io.agentscope.core.agent.StructuredOutputCapableAgent;
 import io.agentscope.core.agent.accumulator.ReasoningContext;
 import io.agentscope.core.hook.ActingChunkEvent;
+import io.agentscope.core.hook.AgentAbortedException;
 import io.agentscope.core.hook.Hook;
 import io.agentscope.core.hook.HookEvent;
 import io.agentscope.core.hook.PostActingEvent;
@@ -413,6 +414,7 @@ public class ReActAgent extends StructuredOutputCapableAgent {
 
         return checkInterruptedAsync()
                 .then(notifyPreReasoningEvent(prepareMessages()))
+                .flatMap(event -> handlePreReasoningAbort(event, context))
                 .flatMapMany(
                         event -> {
                             GenerateOptions options =
@@ -780,15 +782,59 @@ public class ReActAgent extends StructuredOutputCapableAgent {
         return notifyHooks(new PreReasoningEvent(this, model.getModelName(), null, msgs));
     }
 
+    /**
+     * Handle abort request from PreReasoningEvent.
+     *
+     * <p>If the event is aborted and state saving is requested, saves the agent state
+     * to the specified session before throwing AgentAbortedException.
+     */
+    private Mono<PreReasoningEvent> handlePreReasoningAbort(
+            PreReasoningEvent event, ReasoningContext context) {
+        if (event.isAborted()) {
+            if (event.isSaveStateOnAbort()) {
+                saveTo(event.getAbortSaveSession(), event.getAbortSaveSessionKey());
+            }
+            return Mono.error(
+                    new AgentAbortedException(
+                            event.getAbortReason(),
+                            event.getAbortSaveSessionKey(),
+                            event.isSaveStateOnAbort()));
+        }
+        return Mono.just(event);
+    }
+
     private Mono<PostReasoningEvent> notifyPostReasoning(Msg msg) {
         return notifyHooks(new PostReasoningEvent(this, model.getModelName(), null, msg));
     }
 
     private Mono<List<ToolUseBlock>> notifyPreActingHooks(List<ToolUseBlock> toolCalls) {
         return Flux.fromIterable(toolCalls)
-                .concatMap(tool -> notifyHooks(new PreActingEvent(this, toolkit, tool)))
+                .concatMap(
+                        tool ->
+                                notifyHooks(new PreActingEvent(this, toolkit, tool))
+                                        .flatMap(this::handlePreActingAbort))
                 .map(PreActingEvent::getToolUse)
                 .collectList();
+    }
+
+    /**
+     * Handle abort request from PreActingEvent.
+     *
+     * <p>If the event is aborted and state saving is requested, saves the agent state
+     * to the specified session before throwing AgentAbortedException.
+     */
+    private Mono<PreActingEvent> handlePreActingAbort(PreActingEvent event) {
+        if (event.isAborted()) {
+            if (event.isSaveStateOnAbort()) {
+                saveTo(event.getAbortSaveSession(), event.getAbortSaveSessionKey());
+            }
+            return Mono.error(
+                    new AgentAbortedException(
+                            event.getAbortReason(),
+                            event.getAbortSaveSessionKey(),
+                            event.isSaveStateOnAbort()));
+        }
+        return Mono.just(event);
     }
 
     private Mono<Void> notifyActingChunk(ToolUseBlock toolUse, ToolResultBlock chunk) {
