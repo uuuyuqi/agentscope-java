@@ -18,6 +18,7 @@ package io.agentscope.examples.shutdown.tools;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.tool.Tool;
 import io.agentscope.core.tool.ToolEmitter;
+import io.agentscope.core.tool.ToolParam;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -43,10 +44,12 @@ public class OrderProcessingTools {
             description =
                     "Validates an order by checking order ID format, customer information, and"
                             + " basic order data")
-    public String validateOrder(String orderId, ToolEmitter toolEmitter) {
+    public String validateOrder(
+            @ToolParam(name = "orderId", description = "The order ID to validate") String orderId,
+            ToolEmitter toolEmitter) {
         log.info("[Tool] validate_order started for order: {}", orderId);
 
-        // Simulate 2 seconds of processing with progress updates
+        // Simulate 4 seconds of processing with progress updates
         for (int i = 1; i <= 4; i++) {
             if (Thread.currentThread().isInterrupted()) {
                 log.info("[Tool] validate_order interrupted for order: {}", orderId);
@@ -54,7 +57,7 @@ public class OrderProcessingTools {
             }
 
             try {
-                Thread.sleep(500);
+                Thread.sleep(1000);
                 toolEmitter.emit(ToolResultBlock.text("Validating order... " + (i * 25) + "%"));
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -77,13 +80,17 @@ public class OrderProcessingTools {
     @Tool(
             name = "check_inventory",
             description = "Checks if the requested quantity of a product is available in inventory")
-    public String checkInventory(String productId, int quantity, ToolEmitter toolEmitter) {
+    public String checkInventory(
+            @ToolParam(name = "productId", description = "The product ID to check")
+                    String productId,
+            @ToolParam(name = "quantity", description = "The quantity needed") int quantity,
+            ToolEmitter toolEmitter) {
         log.info(
                 "[Tool] check_inventory started for product: {}, quantity: {}",
                 productId,
                 quantity);
 
-        // Simulate 2 seconds of processing
+        // Simulate 4 seconds of processing
         for (int i = 1; i <= 4; i++) {
             if (Thread.currentThread().isInterrupted()) {
                 log.info("[Tool] check_inventory interrupted for product: {}", productId);
@@ -91,7 +98,7 @@ public class OrderProcessingTools {
             }
 
             try {
-                Thread.sleep(500);
+                Thread.sleep(1000);
                 toolEmitter.emit(ToolResultBlock.text("Checking inventory... " + (i * 25) + "%"));
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -132,10 +139,13 @@ public class OrderProcessingTools {
             description =
                     "Processes payment for an order. This is a critical operation that takes longer"
                             + " to complete.")
-    public String processPayment(String orderId, double amount, ToolEmitter toolEmitter) {
+    public String processPayment(
+            @ToolParam(name = "orderId", description = "The order ID") String orderId,
+            @ToolParam(name = "amount", description = "The payment amount") double amount,
+            ToolEmitter toolEmitter) {
         log.info("[Tool] process_payment started for order: {}, amount: {}", orderId, amount);
 
-        // Simulate 3 seconds of payment processing (longer operation)
+        // Simulate 6 seconds of payment processing (longer operation)
         String[] stages = {
             "Connecting to payment gateway...",
             "Verifying payment details...",
@@ -155,7 +165,7 @@ public class OrderProcessingTools {
 
             try {
                 toolEmitter.emit(ToolResultBlock.text(stages[i]));
-                Thread.sleep(500);
+                Thread.sleep(1000);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return "Payment processing interrupted - order: "
@@ -181,10 +191,13 @@ public class OrderProcessingTools {
     @Tool(
             name = "send_notification",
             description = "Sends a notification to the customer about their order status")
-    public String sendNotification(String orderId, String message, ToolEmitter toolEmitter) {
+    public String sendNotification(
+            @ToolParam(name = "orderId", description = "The order ID") String orderId,
+            @ToolParam(name = "message", description = "The notification message") String message,
+            ToolEmitter toolEmitter) {
         log.info("[Tool] send_notification started for order: {}", orderId);
 
-        // Simulate 1 second of notification sending
+        // Simulate 2 second of notification sending
         for (int i = 1; i <= 2; i++) {
             if (Thread.currentThread().isInterrupted()) {
                 log.info("[Tool] send_notification interrupted for order: {}", orderId);
@@ -192,7 +205,7 @@ public class OrderProcessingTools {
             }
 
             try {
-                Thread.sleep(500);
+                Thread.sleep(1000);
                 toolEmitter.emit(ToolResultBlock.text("Sending notification... " + (i * 50) + "%"));
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
