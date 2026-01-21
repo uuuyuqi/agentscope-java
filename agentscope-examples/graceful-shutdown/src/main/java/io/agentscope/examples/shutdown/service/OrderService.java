@@ -109,10 +109,9 @@ public class OrderService {
         SessionKey sessionKey = SimpleSessionKey.of(sessionId);
 
         log.info(
-                "[OrderService] Processing order, sessionId: {}, orderId: {}, isResume: {}",
+                "[OrderService] Processing order, sessionId: {}, orderId: {}",
                 sessionId,
-                request.orderId(),
-                request.sessionId() != null);
+                request.orderId());
 
         // Create agent with tools
         Toolkit toolkit = new Toolkit();
@@ -121,6 +120,8 @@ public class OrderService {
         InMemoryMemory memory = new InMemoryMemory();
 
         // Create hook with session info (auto-registers with shutdown manager)
+        // The hook also handles automatic resume - if InterruptedState exists,
+        // it will inject a SYSTEM message prompting the LLM to continue
         GracefulShutdownHook shutdownHook = new GracefulShutdownHook(session, sessionKey);
 
         ReActAgent agent =
@@ -135,73 +136,45 @@ public class OrderService {
                         .hooks(List.of(shutdownHook))
                         .build();
 
-        // Load previous state if exists
+        // Load previous state if exists (memory, toolkit state, etc.)
+        // Resume logic is now handled automatically by GracefulShutdownHook
         agent.loadIfExists(session, sessionKey);
 
-        // Check for interrupted state (from previous shutdown)
-        Optional<InterruptedState> interruptedOpt =
-                session.get(sessionKey, InterruptedState.KEY, InterruptedState.class);
+        // Build user message for the order
+        // Note: For resume cases, the hook will automatically inject a SYSTEM message
+        // telling the LLM to continue from where it left off
+        String productList =
+                request.products().stream()
+                        .map(
+                                p ->
+                                        String.format(
+                                                "- Product ID: %s, Quantity: %d",
+                                                p.id(), p.quantity()))
+                        .collect(Collectors.joining("\n"));
 
-        // Determine the message to send
-        Msg inputMsg;
-        boolean isResume = interruptedOpt.isPresent();
+        double totalAmount =
+                request.products().stream().mapToDouble(p -> p.quantity() * 99.99).sum();
 
-        if (isResume) {
-            log.info(
-                    "[OrderService] Resuming interrupted order, sessionId: {}, reason: {}",
-                    sessionId,
-                    interruptedOpt.get().reason());
+        String userMessage =
+                String.format(
+                        """
+                        Please process the following order:
+                        Order ID: %s
+                        Products:
+                        %s
+                        Total Amount: $%.2f
 
-            inputMsg =
-                    Msg.builder()
-                            .name("System")
-                            .role(MsgRole.USER)
-                            .content(
-                                    TextBlock.builder()
-                                            .text(
-                                                    "The previous processing was interrupted due"
-                                                            + " to: "
-                                                            + interruptedOpt.get().reason()
-                                                            + ". Please continue from where you"
-                                                            + " left off and complete any remaining"
-                                                            + " steps.")
-                                            .build())
-                            .build();
-        } else {
-            // Build user message for new order
-            String productList =
-                    request.products().stream()
-                            .map(
-                                    p ->
-                                            String.format(
-                                                    "- Product ID: %s, Quantity: %d",
-                                                    p.id(), p.quantity()))
-                            .collect(Collectors.joining("\n"));
+                        Process this order by validating it, checking inventory, \
+                        processing payment, and sending notification.
+                        """,
+                        request.orderId(), productList, totalAmount);
 
-            double totalAmount =
-                    request.products().stream().mapToDouble(p -> p.quantity() * 99.99).sum();
-
-            String userMessage =
-                    String.format(
-                            """
-                            Please process the following order:
-                            Order ID: %s
-                            Products:
-                            %s
-                            Total Amount: $%.2f
-
-                            Process this order by validating it, checking inventory, \
-                            processing payment, and sending notification.
-                            """,
-                            request.orderId(), productList, totalAmount);
-
-            inputMsg =
-                    Msg.builder()
-                            .name("Customer")
-                            .role(MsgRole.USER)
-                            .content(TextBlock.builder().text(userMessage).build())
-                            .build();
-        }
+        Msg inputMsg =
+                Msg.builder()
+                        .name("Customer")
+                        .role(MsgRole.USER)
+                        .content(TextBlock.builder().text(userMessage).build())
+                        .build();
 
         // Stream events from agent
         StreamOptions options =
@@ -210,51 +183,43 @@ public class OrderService {
                                 EventType.REASONING, EventType.TOOL_RESULT, EventType.AGENT_RESULT)
                         .build();
 
-        // Prepend resume notification if resuming
-        Flux<OrderResponse> responseFlux =
-                isResume
-                        ? Flux.just(OrderResponse.resumed(sessionId, "Resuming from saved state"))
-                        : Flux.empty();
-
-        return responseFlux.concatWith(
-                agent.stream(inputMsg, options)
-                        .map(event -> eventToResponse(sessionId, event))
-                        .doOnComplete(
-                                () -> {
-                                    log.info(
-                                            "[OrderService] Order processing completed, sessionId:"
-                                                    + " {}",
-                                            sessionId);
-                                    // Complete: save state and unregister (but don't delete
-                                    // session)
-                                    shutdownHook.complete();
-                                })
-                        .onErrorResume(
-                                AgentAbortedException.class,
-                                e -> {
-                                    log.info(
-                                            "[OrderService] Order processing aborted due to"
-                                                    + " shutdown, sessionId: {}",
-                                            sessionId);
-                                    // State already saved by hook, just return response
-                                    String message =
-                                            e.getReason()
-                                                    + ". State saved. Retry with sessionId: "
-                                                    + sessionId;
-                                    return Flux.just(OrderResponse.interrupted(sessionId, message));
-                                })
-                        .doOnError(
-                                e -> {
-                                    if (!(e instanceof AgentAbortedException)) {
-                                        log.error(
-                                                "[OrderService] Order processing failed, sessionId:"
-                                                        + " {}",
-                                                sessionId,
-                                                e);
-                                        // Save state on error for debugging
-                                        agent.saveTo(session, sessionKey);
-                                    }
-                                }));
+        return agent.stream(inputMsg, options)
+                .map(event -> eventToResponse(sessionId, event))
+                .doOnComplete(
+                        () -> {
+                            log.info(
+                                    "[OrderService] Order processing completed, sessionId:" + " {}",
+                                    sessionId);
+                            // Complete: save state and unregister (but don't delete
+                            // session)
+                            shutdownHook.complete();
+                        })
+                .onErrorResume(
+                        AgentAbortedException.class,
+                        e -> {
+                            log.info(
+                                    "[OrderService] Order processing aborted due to"
+                                            + " shutdown, sessionId: {}",
+                                    sessionId);
+                            // State already saved by hook, just return response
+                            String message =
+                                    e.getReason()
+                                            + ". State saved. Retry with sessionId: "
+                                            + sessionId;
+                            return Flux.just(OrderResponse.interrupted(sessionId, message));
+                        })
+                .doOnError(
+                        e -> {
+                            if (!(e instanceof AgentAbortedException)) {
+                                log.error(
+                                        "[OrderService] Order processing failed, sessionId:"
+                                                + " {}",
+                                        sessionId,
+                                        e);
+                                // Save state on error for debugging
+                                agent.saveTo(session, sessionKey);
+                            }
+                        });
     }
 
     /**
@@ -284,6 +249,12 @@ public class OrderService {
 
         if (event.getType() == EventType.AGENT_RESULT) {
             return OrderResponse.completed(sessionId, content);
+        }
+
+        // Avoid duplicating content for the last event of intermediate steps
+        // The streaming events (isLast=false) already provided the content incrementally
+        if (event.isLast()) {
+            return OrderResponse.processing(sessionId, step, "");
         }
 
         return OrderResponse.processing(sessionId, step, content);

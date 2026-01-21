@@ -66,8 +66,6 @@ public class OrderService {
 2. **谁来保存状态？** —— 应该是框架自动处理，而非业务层手动调用
 3. **Session 是什么？** —— 是用户会话（跨请求），不是请求会话（单次请求）
 
-### 2.3 最终方案
-
 采用 Hook 机制实现框架层自动处理：
 
 ```java
@@ -80,18 +78,18 @@ public class OrderService {
             ? request.sessionId() 
             : generateSessionId();
         
-        // 2. 创建 Agent + Hook（自动注册、自动检测、自动保存）
+        // 2. 创建 Agent + Hook（自动注册、自动检测、自动保存、自动恢复）
         GracefulShutdownHook hook = new GracefulShutdownHook(session, sessionKey);
         ReActAgent agent = ReActAgent.builder()
             .hooks(List.of(hook))
             .build();
         
-        // 3. 加载状态、检查是否恢复
+        // 3. 加载状态（Hook 会自动检测 InterruptedState 并注入 resume 消息）
         agent.loadIfExists(session, sessionKey);
-        boolean isResume = session.get(sessionKey, InterruptedState.KEY, ...).isPresent();
         
-        // 4. 执行（框架自动处理 shutdown）
-        return agent.stream(inputMsg)
+        // 4. 正常发送消息执行（框架自动处理 shutdown 和 resume）
+        // 业务层完全不需要区分新请求还是恢复请求
+        return agent.stream(buildUserMessage(request))
             .doOnComplete(() -> hook.complete())
             .onErrorResume(AgentAbortedException.class, e -> ...);
     }
@@ -171,9 +169,10 @@ Agent 执行流程：
 
 核心职责：
 1. **自动注册**：首次 PreReasoningEvent 时自动注册
-2. **状态检测**：每次事件时检查 isAcceptingRequests()
-3. **状态保存**：检测到 shutdown 时保存 Agent 状态 + InterruptedState
-4. **完成清理**：complete() 时清除 InterruptedState、保存最终状态、注销
+2. **自动恢复**：首次 PreReasoningEvent 时检测 InterruptedState，自动注入 SYSTEM 消息提示 LLM 继续
+3. **状态检测**：每次事件时检查 isAcceptingRequests()
+4. **状态保存**：检测到 shutdown 时保存 Agent 状态 + InterruptedState
+5. **完成清理**：complete() 时清除 InterruptedState、保存最终状态、注销
 
 ```java
 public class GracefulShutdownHook implements Hook {
@@ -335,7 +334,7 @@ public class MyService {
             : UUID.randomUUID().toString();
         SessionKey sessionKey = SimpleSessionKey.of(sessionId);
         
-        // 2. 创建 Hook
+        // 2. 创建 Hook（自动处理注册、shutdown检测、状态保存、resume）
         GracefulShutdownHook hook = new GracefulShutdownHook(session, sessionKey);
         
         // 3. 创建 Agent
@@ -344,12 +343,11 @@ public class MyService {
             .hooks(List.of(hook))
             .build();
         
-        // 4. 加载之前的状态
+        // 4. 加载之前的状态（Hook 会自动检测并注入 resume 消息）
         agent.loadIfExists(session, sessionKey);
         
-        // 5. 检查是否恢复
-        boolean isResume = session.get(sessionKey, InterruptedState.KEY, InterruptedState.class).isPresent();
-        Msg inputMsg = isResume ? createResumeMsg() : createNewMsg(request);
+        // 5. 正常构建并发送消息（无需区分新请求还是恢复请求）
+        Msg inputMsg = createUserMsg(request);
         
         // 6. 执行
         return agent.stream(inputMsg)

@@ -21,8 +21,14 @@ import io.agentscope.core.hook.Hook;
 import io.agentscope.core.hook.HookEvent;
 import io.agentscope.core.hook.PreActingEvent;
 import io.agentscope.core.hook.PreReasoningEvent;
+import io.agentscope.core.message.Msg;
+import io.agentscope.core.message.MsgRole;
+import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.session.Session;
 import io.agentscope.core.state.SessionKey;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Mono;
@@ -38,39 +44,43 @@ import reactor.core.publisher.Mono;
  *   <li><b>Shutdown detection:</b> Checks if service is shutting down before each reasoning/acting
  *   <li><b>State persistence:</b> Saves agent state and {@link InterruptedState} marker when
  *       aborting
+ *   <li><b>Automatic resume:</b> Detects interrupted state and injects resume prompt automatically
  * </ul>
  *
  * <h2>Usage:</h2>
  *
+ * <p>The hook automatically handles resume logic. Business layer only needs to:
+ *
  * <pre>{@code
  * // Create agent with GracefulShutdownHook
+ * GracefulShutdownHook hook = new GracefulShutdownHook(session, sessionKey);
  * ReActAgent agent = ReActAgent.builder()
  *     .name("MyAgent")
  *     .model(model)
- *     .hooks(List.of(new GracefulShutdownHook(session, sessionKey)))
+ *     .hooks(List.of(hook))
  *     .build();
  *
  * // Load previous state if exists
  * agent.loadIfExists(session, sessionKey);
  *
- * // Check for interrupted state (from previous shutdown)
- * Optional<InterruptedState> interrupted = session.get(
- *     sessionKey, InterruptedState.KEY, InterruptedState.class);
- *
- * if (interrupted.isPresent()) {
- *     // Resume interrupted execution
- *     return agent.stream(resumeMessage);
- * } else {
- *     // Start new execution
- *     return agent.stream(userMessage);
- * }
+ * // Just send the user message - resume is handled automatically by the hook
+ * // If there was an interrupted state, the hook will inject a SYSTEM message
+ * // prompting the LLM to continue from where it left off
+ * return agent.stream(userMessage)
+ *     .doOnComplete(() -> hook.complete());
  * }</pre>
  *
- * <h2>Automatic Registration:</h2>
+ * <h2>Automatic Resume:</h2>
  *
- * <p>The hook automatically registers the agent with {@link GracefulShutdownManager} on the first
- * {@link PreReasoningEvent}. This means you don't need to manually call {@code
- * shutdownManager.registerRequest()}.
+ * <p>When the agent loads from a session that has an {@link InterruptedState} marker,
+ * this hook automatically:
+ * <ol>
+ *   <li>Detects the interrupted state on first {@link PreReasoningEvent}</li>
+ *   <li>Injects a SYSTEM message telling the LLM to continue from where it left off</li>
+ *   <li>Clears the interrupted state marker</li>
+ * </ol>
+ *
+ * <p>This allows business layer to be completely unaware of resume logic.
  *
  * <h2>Completion:</h2>
  *
@@ -94,6 +104,7 @@ public class GracefulShutdownHook implements Hook {
 
     private volatile AgentBase registeredAgent;
     private volatile boolean registered = false;
+    private volatile boolean resumed = false;
 
     /**
      * Creates a GracefulShutdownHook with session information.
@@ -165,9 +176,12 @@ public class GracefulShutdownHook implements Hook {
 
     @Override
     public <T extends HookEvent> Mono<T> onEvent(T event) {
-        // Auto-register on first PreReasoning event
-        if (!registered && event instanceof PreReasoningEvent) {
+        // Handle resume and auto-register on first PreReasoning event
+        if (event instanceof PreReasoningEvent preReasoningEvent) {
             ensureRegistered(event.getAgent());
+            if (!resumed) {
+                handleResumeIfNeeded(preReasoningEvent);
+            }
         }
 
         // Check if we're shutting down
@@ -180,6 +194,66 @@ public class GracefulShutdownHook implements Hook {
         }
 
         return Mono.just(event);
+    }
+
+    /**
+     * Handle resume if InterruptedState exists in session.
+     *
+     * <p>When resuming from a previous interrupted execution, this method:
+     * <ul>
+     *   <li>Detects the {@link InterruptedState} marker in session</li>
+     *   <li>Injects a SYSTEM message to prompt the LLM to continue</li>
+     *   <li>Clears the InterruptedState marker</li>
+     * </ul>
+     *
+     * <p>This allows the business layer to be completely unaware of resume logic.
+     * The agent will automatically continue from where it left off based on its
+     * loaded conversation history.
+     */
+    private void handleResumeIfNeeded(PreReasoningEvent event) {
+        Optional<InterruptedState> interruptedOpt =
+                session.get(sessionKey, InterruptedState.KEY, InterruptedState.class);
+
+        if (interruptedOpt.isPresent()) {
+            InterruptedState state = interruptedOpt.get();
+
+            log.info(
+                    "[GracefulShutdownHook] Detected interrupted state for session: {}, "
+                            + "interrupted at: {}, reason: {}. Injecting resume message.",
+                    sessionKey,
+                    state.interruptedAt(),
+                    state.reason());
+
+            // Build resume prompt message
+            Msg resumeMsg =
+                    Msg.builder()
+                            .name("System")
+                            .role(MsgRole.SYSTEM)
+                            .content(
+                                    TextBlock.builder()
+                                            .text(
+                                                    "IMPORTANT: Your previous execution was"
+                                                            + " interrupted at "
+                                                            + state.interruptedAt()
+                                                            + " due to: "
+                                                            + state.reason()
+                                                            + ". You have already made progress."
+                                                            + " Review your conversation history"
+                                                            + " and continue from where you left"
+                                                            + " off. Do not restart from the"
+                                                            + " beginning.")
+                                            .build())
+                            .build();
+
+            // Inject resume message into input messages
+            List<Msg> inputMsgs = new ArrayList<>(event.getInputMessages());
+            inputMsgs.add(resumeMsg);
+            event.setInputMessages(inputMsgs);
+
+            // Clear interrupted state marker
+            session.delete(sessionKey, InterruptedState.KEY);
+            resumed = true;
+        }
     }
 
     /**
